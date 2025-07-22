@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+package-lock.json
+yarn.lock
+
+# Environment & Configuration files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.cert
+client_secret.json
+oauth-config.json
+getRefreshToken.js
+google.json
+
+# Logs
+logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Directory for uploaded files
+uploads/
+
+# Coverage directory
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.DS_Store
