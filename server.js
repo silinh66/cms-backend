@@ -376,6 +376,9 @@ app.listen(PORT, function () {
   console.log("Node app is running on port 3000");
 });
 
+// Tăng timeout lên 30 phút (1800000 ms)
+app.timeout = 1800000;
+
 // Đọc thông tin OAuth từ file cấu hình
 let CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REFRESH_TOKEN;
 try {
