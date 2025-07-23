@@ -413,7 +413,10 @@ const oauth2Client = new google.auth.OAuth2(
 oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 
 const SCOPES = ["https://www.googleapis.com/auth/drive"];
-const upload = multer({ dest: "uploads/" });
+const upload = multer({
+  dest: "uploads/",
+  limits: { fileSize: 3 * 1024 * 1024 * 1024 },
+});
 
 // Cập nhật mapping giữa kênh và folder ID
 const channelFolderMap = {
