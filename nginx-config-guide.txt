@@ -1,0 +1,192 @@
+# NGINX Configuration Guide for CMS Large File Uploads
+
+## Cấu hình NGINX cho phép upload file lớn
+
+Đây là hướng dẫn cấu hình NGINX để hỗ trợ upload file lớn và tránh lỗi timeout.
+
+### 1. Cấu hình Server Block
+
+Thêm đoạn cấu hình này vào file `/etc/nginx/sites-available/your-site`:
+
+```nginx
+server {
+    listen 80;
+    server_name api.cms.zoozostudio.com; # Thay thế bằng domain của bạn
+    
+    # Tăng giới hạn kích thước body request
+    client_max_body_size 4G;
+    
+    # Tăng timeout cho request lớn
+    client_body_timeout 3600s;
+    proxy_read_timeout 3600s;
+    proxy_connect_timeout 3600s;
+    proxy_send_timeout 3600s;
+    fastcgi_read_timeout 3600s;
+    
+    # Bật buffer cho upload file lớn
+    client_body_buffer_size 1M;
+    
+    location / {
+        proxy_pass http://localhost:3000; # Port Node.js server
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        
+        # CORS headers (nếu cần)
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' 'Accept,Authorization,Cache-Control,Content-Type,DNT,If-Modified-Since,Keep-Alive,Origin,User-Agent,X-Requested-With' always;
+        
+        # Xử lý OPTIONS request cho CORS
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' '*' always;
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+            add_header 'Access-Control-Allow-Headers' 'Accept,Authorization,Cache-Control,Content-Type,DNT,If-Modified-Since,Keep-Alive,Origin,User-Agent,X-Requested-With' always;
+            add_header 'Access-Control-Max-Age' 1728000;
+            add_header 'Content-Type' 'text/plain charset=UTF-8';
+            add_header 'Content-Length' 0;
+            return 204;
+        }
+    }
+}
+```
+
+### 2. Kiểm tra và áp dụng cấu hình
+
+```bash
+# Kiểm tra cú pháp cấu hình
+sudo nginx -t
+
+# Nếu không có lỗi, reload NGINX
+sudo systemctl reload nginx
+
+# Hoặc restart NGINX
+sudo systemctl restart nginx
+```
+
+### 3. Cấu hình nginx.conf chung
+
+Mở file `/etc/nginx/nginx.conf` và thêm hoặc chỉnh sửa các cấu hình sau trong phần `http`:
+
+```nginx
+http {
+    # Các cấu hình có sẵn...
+    
+    # Tăng buffer size
+    client_header_buffer_size 1k;
+    large_client_header_buffers 4 8k;
+    
+    # Tăng giới hạn kích thước body request toàn cục
+    client_max_body_size 4G;
+    
+    # Thời gian giữ kết nối
+    keepalive_timeout 300;
+    
+    # Tăng worker connections nếu cần
+    # events {
+    #     worker_connections 1024;
+    # }
+    
+    # Bật gzip để tối ưu hoá bandwidth
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 256;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types
+        application/javascript
+        application/json
+        application/x-javascript
+        application/xml
+        image/svg+xml
+        text/css
+        text/javascript
+        text/plain
+        text/xml;
+        
+    # Các cấu hình khác...
+}
+```
+
+### 4. Các lưu ý quan trọng:
+
+- `client_max_body_size 4G`: Cho phép upload file tối đa 4GB. Điều chỉnh theo nhu cầu.
+- `proxy_read_timeout`, `fastcgi_read_timeout`: Thời gian chờ đọc response từ upstream server, nên đặt đủ lớn cho việc upload file lớn.
+- Nếu sử dụng load balancer hoặc reverse proxy khác phía trước, cần cấu hình tương tự.
+
+### 5. Cấu hình tham khảo cho môi trường production:
+
+```nginx
+# Tối ưu performance cho máy chủ có nhiều core
+worker_processes auto;
+worker_rlimit_nofile 65535;
+
+events {
+    multi_accept on;
+    worker_connections 65535;
+    use epoll;
+}
+
+http {
+    # Caching
+    open_file_cache max=200000 inactive=20s;
+    open_file_cache_valid 30s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors on;
+    
+    # Buffer settings
+    client_body_buffer_size 1M;
+    client_max_body_size 4G;
+    
+    # Timeouts
+    client_body_timeout 3600s;
+    client_header_timeout 3600s;
+    keepalive_timeout 300;
+    send_timeout 3600s;
+    
+    # File upload
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    
+    # Logging settings
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+    
+    # Include server blocks
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+```
+
+### 6. Khắc phục sự cố:
+
+1. **Nếu vẫn gặp lỗi 413 Request Entity Too Large**:
+   - Kiểm tra lại `client_max_body_size` trong tất cả các block server và location
+   - Đảm bảo đã reload/restart NGINX sau khi thay đổi cấu hình
+
+2. **Nếu gặp lỗi timeout**:
+   - Tăng các giá trị timeout (`proxy_read_timeout`, `client_body_timeout`, v.v.)
+   - Kiểm tra logs tại `/var/log/nginx/error.log`
+
+3. **Nếu gặp lỗi CORS**:
+   - Đảm bảo các header CORS được thêm vào location block
+   - Kiểm tra cấu hình CORS ở backend Node.js
+
+### 7. Kiểm tra cấu hình và logs:
+
+```bash
+# Kiểm tra cấu hình NGINX hiện tại
+sudo nginx -T
+
+# Kiểm tra logs lỗi
+sudo tail -f /var/log/nginx/error.log
+
+# Kiểm tra logs access
+sudo tail -f /var/log/nginx/access.log
+``` 

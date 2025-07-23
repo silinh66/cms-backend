@@ -307,21 +307,19 @@ var corsOptions = {
   },
 };
 
+// Ensure CORS middleware is first in the chain to avoid CORS errors
 app.use(cors(isProduct ? corsOptions : { origin: "http://localhost:3001" }));
 
-//local
-// app.use(cors({ origin: "http://localhost:3001" }));
-
-//product
-// app.use(cors({ origin: "https://ten-ticker-cms.herokuapp.com" }));
-
-app.use(bodyParser.json({ type: "application/json", limit: "4gb" }));
+// Increase body parser limits for large file uploads
+app.use(bodyParser.json({ limit: "4gb", type: "application/json" }));
 app.use(
   bodyParser.urlencoded({
     extended: true,
     limit: "4gb",
   })
 );
+
+// Setup other middleware after CORS
 app.all("*", function (req, res, next) {
   /**
    * Response settings
@@ -372,12 +370,13 @@ app.get("/api", function (req, res) {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, function () {
-  console.log("Node app is running on port 3000");
+// Create server with timeout config
+const server = app.listen(PORT, function () {
+  console.log("Node app is running on port " + PORT);
 });
 
-// Tăng timeout lên 30 phút (1800000 ms)
-app.timeout = 1800000;
+// Set server timeout to 30 minutes for large file uploads
+server.timeout = 1800000;
 
 // Đọc thông tin OAuth từ file cấu hình
 let CLIENT_ID, CLIENT_SECRET, REDIRECT_URI, REFRESH_TOKEN;
@@ -419,7 +418,10 @@ oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 const SCOPES = ["https://www.googleapis.com/auth/drive"];
 const upload = multer({
   dest: "uploads/",
-  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
+  limits: {
+    fileSize: 4 * 1024 * 1024 * 1024, // 4GB
+    fieldSize: 4 * 1024 * 1024 * 1024, // 4GB for form fields
+  },
 });
 
 // Cập nhật mapping giữa kênh và folder ID
@@ -827,7 +829,7 @@ app.post(
       // Khởi tạo Google Drive API
       const drive = google.drive({ version: "v3", auth: oauth2Client });
 
-      // Upload file lên Google Drive
+      // Upload file lên Google Drive với streaming để tránh out of memory
       const response = await drive.files.create({
         requestBody: {
           name: originalName,
@@ -838,6 +840,10 @@ app.post(
           body: fs.createReadStream(filePath),
         },
         fields: "id, name",
+        // Không chặn/block Node.js event loop trong quá trình upload
+        supportsAllDrives: true,
+        // Upload sử dụng multipart để hiệu quả hơn
+        uploadType: "multipart",
       });
 
       // Xóa file tạm trên server
