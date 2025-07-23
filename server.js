@@ -315,10 +315,11 @@ app.use(cors(isProduct ? corsOptions : { origin: "http://localhost:3001" }));
 //product
 // app.use(cors({ origin: "https://ten-ticker-cms.herokuapp.com" }));
 
-app.use(bodyParser.json({ type: "application/json" }));
+app.use(bodyParser.json({ type: "application/json", limit: "4gb" }));
 app.use(
   bodyParser.urlencoded({
     extended: true,
+    limit: "4gb",
   })
 );
 app.all("*", function (req, res, next) {
@@ -415,7 +416,7 @@ oauth2Client.setCredentials({ refresh_token: REFRESH_TOKEN });
 const SCOPES = ["https://www.googleapis.com/auth/drive"];
 const upload = multer({
   dest: "uploads/",
-  limits: { fileSize: 3 * 1024 * 1024 * 1024 },
+  limits: { fileSize: 4 * 1024 * 1024 * 1024 },
 });
 
 // Cập nhật mapping giữa kênh và folder ID
