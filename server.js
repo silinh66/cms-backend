@@ -1,3 +1,6 @@
+// Load environment variables
+require("dotenv").config({ path: "./config.env" });
+
 var express = require("express");
 var app = express();
 var bodyParser = require("body-parser");
@@ -58,22 +61,32 @@ async function readGoogleDocs(documentId) {
     const response = await docs.documents.get({ documentId }); // ID of the document to read
     return response.data; // Return the document data
   } catch (error) {
-    console.error("error", error); // Log any errors that occur
+    console.error("Error reading Google Doc:", error); // Log any errors that occur
+    throw error; // Re-throw error để caller có thể xử lý
   }
 }
 
 function countWords(text) {
+  // Kiểm tra nếu text rỗng hoặc null
+  if (!text || typeof text !== "string") {
+    return 0;
+  }
+
   // Xóa các ký tự không cần thiết và tách chuỗi thành mảng dựa vào khoảng trắng
   const words = text
     .trim()
     .replace(/\s{2,}/g, " ")
     .split(/\s+/);
 
-  // Trả về số lượng từ
-  return words.length;
+  // Trả về số lượng từ (nếu text chỉ có khoảng trắng thì trả về 0)
+  return words.length === 1 && words[0] === "" ? 0 : words.length;
 }
 
 function extractAllText(content) {
+  if (!content || !Array.isArray(content)) {
+    return "";
+  }
+
   return content
     .flatMap((d) => d.paragraph?.elements || [])
     .map((element) => element.textRun?.content || "")
@@ -84,7 +97,207 @@ var cron = require("node-cron");
 const { default: axios } = require("axios");
 const { map, includes, get, isEmpty } = require("lodash");
 const moment = require("moment");
-const KEY = "AIzaSyCVcmoOusyx6ZsSrAHag5DJ-ohVQ3YyDVQ";
+const KEY =
+  process.env.GOOGLE_API_KEY || "AIzaSyCVcmoOusyx6ZsSrAHag5DJ-ohVQ3YyDVQ";
+
+// Telegram Bot Configuration
+const TELEGRAM_BOT_TOKEN =
+  process.env.TELEGRAM_BOT_TOKEN ||
+  "8220622923:AAEvSBn2XE4EzdbHRMTVY1gjnYw3H0OcklE";
+
+// Mapping tên kênh <-> Telegram group ID
+const TELEGRAM_GROUPS = {
+  "Vẹt tiếng Anh": "-4941167429", // Chat ID thực của nhóm Vẹt tiếng Anh
+  "Vẹt tiếng Việt": "-4810669846", // Thêm các kênh khác khi cần
+  "Mèo tiếng Anh": "-4977709258",
+  "Mèo tiếng Việt": "-4807719060",
+  "Sư tử tiếng Anh": "-4967418133",
+  "Sư tử tiếng Việt": "-4858380052",
+  "Trứng tiếng Anh": "-4830604524",
+  "Trứng tiếng Việt": "-4937315659",
+  "Lửng tiếng Anh": "-4855405357",
+  "Lửng tiếng Việt": "-4904188895",
+};
+
+// Hàm lấy username Telegram từ CMS name
+async function getTelegramUsername(cmsName) {
+  try {
+    // Lấy dữ liệu từ Google Sheets
+    const response = await axios.get(
+      `https://sheets.googleapis.com/v4/spreadsheets/1xEHFgkYpCFP_hsMTjjb2h5Sl5poJW_heh7fq91k1AyU/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=${
+        process.env.GOOGLE_SHEETS_API_KEY ||
+        "AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+      }`
+    );
+
+    if (
+      !response.data ||
+      !response.data.valueRanges ||
+      !response.data.valueRanges[0] ||
+      !response.data.valueRanges[0].values
+    ) {
+      return null;
+    }
+
+    const data = response.data.valueRanges[0].values;
+
+    // Tìm user có CMS name trùng khớp (cột AI)
+    for (let i = 1; i < data.length; i++) {
+      const userCmsName = data[i][fixUserColumn.cms]; // Cột AI - CMS
+      if (userCmsName && userCmsName.toLowerCase() === cmsName.toLowerCase()) {
+        // Lấy username Telegram từ cột AJ - Nickname của cùng dòng đó
+        const telegramUsername = data[i][fixUserColumn.nickname]; // Cột AJ - Nickname
+        return telegramUsername
+          ? `@${telegramUsername.replace("@", "")}`
+          : null;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Lỗi lấy username Telegram:", error);
+    return null;
+  }
+}
+
+// Hàm parse activity message để tìm người được thay đổi thành
+async function parseActivityForMentions(activityText) {
+  const mentionedUsers = [];
+
+  try {
+    // Pattern để tìm "thành [tên]" trong activity
+    const patterns = [
+      /thành\s+([^\s]+(?:\s+[^\s]+)*)/gi, // "thành 7 Huy", "thành 2 Tạ Quang Chiến"
+      /Thành\s+([^\s]+(?:\s+[^\s]+)*)/gi, // "Thành 7 Huy"
+      /thành\s+(\d+\s+[^\s]+(?:\s+[^\s]+)*)/gi, // "thành 2 Tạ Quang Chiến"
+      /Thành\s+(\d+\s+[^\s]+(?:\s+[^\s]+)*)/gi, // "Thành 2 Tạ Quang Chiến"
+    ];
+
+    for (const pattern of patterns) {
+      const matches = activityText.match(pattern);
+      if (matches) {
+        for (const match of matches) {
+          // Lấy tên sau "thành"
+          const nameMatch = match.match(/thành\s+(.+)/i);
+          if (nameMatch) {
+            const cmsName = nameMatch[1].trim();
+            console.log(`Tìm thấy CMS name trong activity: ${cmsName}`);
+
+            // Lấy Telegram username cho CMS name này
+            const telegramUsername = await getTelegramUsername(cmsName);
+            if (telegramUsername) {
+              mentionedUsers.push(telegramUsername);
+              console.log(
+                `Đã thêm Telegram username: ${telegramUsername} cho ${cmsName}`
+              );
+            } else {
+              console.log(`Không tìm thấy Telegram username cho: ${cmsName}`);
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Lỗi parse activity cho mentions:", error);
+  }
+
+  return mentionedUsers;
+}
+
+// Hàm gửi thông báo Telegram
+async function sendTelegramNotification(
+  channelName,
+  message,
+  mentionedUsers = []
+) {
+  const groupId = TELEGRAM_GROUPS[channelName];
+  if (!groupId) {
+    console.log(`Không tìm thấy Telegram group cho kênh: ${channelName}`);
+    return;
+  }
+
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.log("Thiếu Telegram Bot Token");
+    return;
+  }
+
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+
+  // Thêm tag người dùng vào cuối message nếu có
+  let finalMessage = message;
+  if (mentionedUsers.length > 0) {
+    finalMessage += `\n\n👥 <b>Tag:</b> ${mentionedUsers.join(" ")}`;
+  }
+
+  try {
+    const response = await axios.post(url, {
+      chat_id: groupId,
+      text: finalMessage,
+      parse_mode: "HTML",
+    });
+    console.log(
+      `Đã gửi thông báo Telegram thành công cho kênh: ${channelName}`
+    );
+  } catch (err) {
+    console.error(
+      "Lỗi gửi thông báo Telegram:",
+      err?.response?.data || err.message
+    );
+  }
+}
+
+// API để test và lấy chat_id của Telegram group
+app.post("/api/telegram/test", async function (req, res) {
+  const { channelName, message, mentionedUsers } = req.body;
+
+  if (!channelName || !message) {
+    return res.status(400).send({
+      error: true,
+      message: "Please provide channelName and message",
+    });
+  }
+
+  try {
+    await sendTelegramNotification(channelName, message, mentionedUsers || []);
+    res.send({
+      error: false,
+      message: `Đã gửi thông báo test cho kênh: ${channelName}`,
+    });
+  } catch (error) {
+    res.status(500).send({
+      error: true,
+      message: "Lỗi gửi thông báo Telegram",
+      details: error.message,
+    });
+  }
+});
+
+// API để lấy thông tin chat của Telegram group
+app.get("/api/telegram/get-updates", async function (req, res) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    return res.status(400).send({
+      error: true,
+      message: "Thiếu Telegram Bot Token",
+    });
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates`;
+    const response = await axios.get(url);
+
+    res.send({
+      error: false,
+      data: response.data,
+      message: "Lấy thông tin updates thành công",
+    });
+  } catch (error) {
+    res.status(500).send({
+      error: true,
+      message: "Lỗi lấy thông tin updates",
+      details: error.message,
+    });
+  }
+});
 const fixUserColumn = {
   id: 0,
   name: 1,
@@ -449,7 +662,10 @@ const getUserChannels = async (username) => {
   console.log("username: ", username);
   try {
     const response = await axios.get(
-      "https://sheets.googleapis.com/v4/spreadsheets/1xEHFgkYpCFP_hsMTjjb2h5Sl5poJW_heh7fq91k1AyU/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+      `https://sheets.googleapis.com/v4/spreadsheets/1xEHFgkYpCFP_hsMTjjb2h5Sl5poJW_heh7fq91k1AyU/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=${
+        process.env.GOOGLE_SHEETS_API_KEY ||
+        "AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+      }`
     );
 
     if (
@@ -1339,17 +1555,62 @@ app.get("/api/activity/:id", function (req, res) {
 // Add a new activity
 app.post("/api/activity/add", function (req, res) {
   let activity = req.body.data;
+  let content_code = req.body.content_code; // Thêm content_code từ request
   console.log("activity", activity);
+  console.log("content_code", content_code);
   if (!activity) {
     return res
       .status(400)
       .send({ error: true, message: "Please provide activity" });
   }
+
   dbTenTicker.query(
     "INSERT INTO activity VALUES (?, ?, ?, ?)",
     [...activity],
-    function (error, results, fields) {
+    async function (error, results, fields) {
       if (error) throw error;
+
+      try {
+        // Gửi thông báo Telegram khi thêm mới activity
+        const newData = {
+          id: activity[0],
+          activity_date: activity[1],
+          activity: activity[2],
+          user_name: activity[3],
+        };
+
+        // Sử dụng content_code để xác định kênh
+        let channelName = content_code || "Vẹt tiếng Anh"; // Sử dụng content_code nếu có
+
+        // Lấy username Telegram của người tạo để tag
+        const telegramUsername = await getTelegramUsername(newData.user_name);
+        let mentionedUsers = [];
+        if (telegramUsername) {
+          mentionedUsers.push(telegramUsername);
+        }
+
+        // Parse activity để tìm người được thay đổi thành
+        const activityMentions = await parseActivityForMentions(
+          newData.activity
+        );
+        mentionedUsers = [...mentionedUsers, ...activityMentions];
+
+        // Tạo message thông báo
+        let message = `🎊 <b>THÔNG BÁO</b>\n`;
+        message += `Kênh: <b>${channelName}</b>\n`;
+        message += `Người tạo: <b>${newData.user_name}</b>\n`;
+        message += `Ngày: <b>${moment(newData.activity_date).format(
+          "DD/MM/YYYY HH:mm"
+        )}</b>\n`;
+        message += `Nội dung: <b>${newData.activity}</b>`;
+
+        // Gửi thông báo Telegram với tag
+        await sendTelegramNotification(channelName, message, mentionedUsers);
+      } catch (telegramError) {
+        console.error("Lỗi gửi thông báo Telegram:", telegramError);
+        // Không ảnh hưởng đến việc thêm activity
+      }
+
       return res.send({
         error: false,
         data: results,
@@ -1359,28 +1620,139 @@ app.post("/api/activity/add", function (req, res) {
   );
 });
 
+// API để test parse activity mentions
+app.post("/api/telegram/test-parse", async function (req, res) {
+  const { activityText } = req.body;
+
+  if (!activityText) {
+    return res.status(400).send({
+      error: true,
+      message: "Please provide activityText",
+    });
+  }
+
+  try {
+    const mentionedUsers = await parseActivityForMentions(activityText);
+    res.send({
+      error: false,
+      message: `Parse thành công`,
+      mentionedUsers: mentionedUsers,
+      activityText: activityText,
+    });
+  } catch (error) {
+    res.status(500).send({
+      error: true,
+      message: "Lỗi parse activity",
+      error: error.message,
+    });
+  }
+});
+
 //  Update activity with id
 app.put("/api/activity", function (req, res) {
   let activity_id = req.body.activity_id;
   let activity = req.body.data;
+  let content_code = req.body.content_code; // Thêm content_code từ request
   console.log("activity_id", activity_id);
   console.log("activity", activity);
+  console.log("content_code", content_code);
   if (!activity_id || !activity) {
     return res.status(400).send({
       error: data,
       message: "Please provide activity and activity_id",
     });
   }
+
+  // Lấy thông tin activity cũ để so sánh
   dbTenTicker.query(
-    "UPDATE activity SET id = ?, activity_date = ?,  activity = ?, user_name = ?  WHERE id = ?",
-    [...activity, activity_id],
-    function (error, results, fields) {
+    "SELECT * FROM activity WHERE id = ?",
+    [activity_id],
+    async function (error, oldActivity, fields) {
       if (error) throw error;
-      return res.send({
-        error: false,
-        data: results,
-        message: "activity has been updated successfully.",
-      });
+
+      // Update activity
+      dbTenTicker.query(
+        "UPDATE activity SET id = ?, activity_date = ?,  activity = ?, user_name = ?  WHERE id = ?",
+        [...activity, activity_id],
+        async function (error, results, fields) {
+          if (error) throw error;
+
+          try {
+            // Gửi thông báo Telegram nếu có thay đổi
+            if (oldActivity && oldActivity.length > 0) {
+              const oldData = oldActivity[0];
+              const newData = {
+                id: activity[0],
+                activity_date: activity[1],
+                activity: activity[2],
+                user_name: activity[3],
+              };
+
+              // Kiểm tra xem có thay đổi gì không
+              if (
+                oldData.user_name !== newData.user_name ||
+                oldData.activity !== newData.activity
+              ) {
+                // Sử dụng content_code để xác định kênh
+                let channelName = content_code || "Vẹt tiếng Anh"; // Sử dụng content_code nếu có
+
+                // Tạo message thông báo
+                let message = `📝 <b>Cập nhật Activity</b>\n`;
+                message += `ID: <b>${newData.id}</b>\n`;
+                message += `Kênh: <b>${channelName}</b>\n`;
+                message += `Người cập nhật: <b>${newData.user_name}</b>\n`;
+                message += `Ngày: <b>${moment(newData.activity_date).format(
+                  "DD/MM/YYYY HH:mm"
+                )}</b>\n`;
+
+                // Lấy username Telegram của editor mới để tag
+                let mentionedUsers = [];
+                if (oldData.user_name !== newData.user_name) {
+                  message += `\n🔄 <b>Thay đổi Editor:</b>\n`;
+                  message += `Từ: <b>${oldData.user_name}</b>\n`;
+                  message += `Thành: <b>${newData.user_name}</b>`;
+
+                  // Tag editor mới
+                  const telegramUsername = await getTelegramUsername(
+                    newData.user_name
+                  );
+                  if (telegramUsername) {
+                    mentionedUsers.push(telegramUsername);
+                  }
+                }
+
+                if (oldData.activity !== newData.activity) {
+                  message += `\n📄 <b>Thay đổi nội dung:</b>\n`;
+                  message += `Từ: <b>${oldData.activity}</b>\n`;
+                  message += `Thành: <b>${newData.activity}</b>`;
+
+                  // Parse activity mới để tìm người được thay đổi thành
+                  const activityMentions = await parseActivityForMentions(
+                    newData.activity
+                  );
+                  mentionedUsers = [...mentionedUsers, ...activityMentions];
+                }
+
+                // Gửi thông báo Telegram với tag
+                await sendTelegramNotification(
+                  channelName,
+                  message,
+                  mentionedUsers
+                );
+              }
+            }
+          } catch (telegramError) {
+            console.error("Lỗi gửi thông báo Telegram:", telegramError);
+            // Không ảnh hưởng đến việc update activity
+          }
+
+          return res.send({
+            error: false,
+            data: results,
+            message: "activity has been updated successfully.",
+          });
+        }
+      );
     }
   );
 });
@@ -1476,26 +1848,69 @@ app.post("/api/salary", function (req, res) {
 app.post("/api/countWord", async function (req, res) {
   let sheetUrl = req.body.sheetUrl;
   console.log("sheetUrl: ", sheetUrl);
-  const data = await readGoogleDocs(
-    extractGoogleDocID(
-      // "https://docs.google.com/document/d/1EqSCWBy-brAVLDfODF6Yn_rFrGOd0-lVtepI_WyYib0/edit"
-      sheetUrl
-    )
-  );
-  //   console.log("data: ", data);
-  // Extract and log the text content from the document
-  //   console.log(
-  //     data.body.content.map((d) => d.paragraph?.elements[0]["textRun"])
-  //   );
-  // let content = data.body.content
-  //   .map((d) => d.paragraph?.elements[0]["textRun"])
-  //   ?.map((item) => item?.content)
-  //   ?.join(" ");
-  let content = extractAllText(data.body.content);
-  console.log("content: ", content);
-  const wordCount = countWords(content);
-  console.log("wordCount: ", wordCount);
-  return res.send({ error: false, data: wordCount, message: "word count" });
+
+  // Kiểm tra nếu sheetUrl rỗng hoặc null
+  if (!sheetUrl || sheetUrl.trim() === "") {
+    console.log("sheetUrl is empty, returning 0 word count");
+    return res.send({
+      error: false,
+      data: 0,
+      message: "Empty content, word count is 0",
+    });
+  }
+
+  // Trích xuất Google Doc ID từ URL
+  const documentId = extractGoogleDocID(sheetUrl);
+
+  // Kiểm tra nếu không phải Google Doc URL hoặc không trích xuất được ID
+  if (!documentId) {
+    console.log(
+      "Invalid Google Doc URL or cannot extract document ID, returning 0 word count"
+    );
+    return res.send({
+      error: false,
+      data: 0,
+      message: "Invalid Google Doc URL, word count is 0",
+    });
+  }
+
+  try {
+    const data = await readGoogleDocs(documentId);
+
+    // Kiểm tra nếu không đọc được document hoặc data là undefined
+    if (!data || !data.body || !data.body.content) {
+      console.log(
+        "Cannot read Google Doc or document is empty, returning 0 word count"
+      );
+      return res.send({
+        error: false,
+        data: 0,
+        message: "Cannot read Google Doc, word count is 0",
+      });
+    }
+
+    //   console.log("data: ", data);
+    // Extract and log the text content from the document
+    //   console.log(
+    //     data.body.content.map((d) => d.paragraph?.elements[0]["textRun"])
+    //   );
+    // let content = data.body.content
+    //   .map((d) => d.paragraph?.elements[0]["textRun"])
+    //   ?.map((item) => item?.content)
+    //   ?.join(" ");
+    let content = extractAllText(data.body.content);
+    console.log("content: ", content);
+    const wordCount = countWords(content);
+    console.log("wordCount: ", wordCount);
+    return res.send({ error: false, data: wordCount, message: "word count" });
+  } catch (error) {
+    console.error("Error reading Google Doc:", error);
+    return res.send({
+      error: false,
+      data: 0,
+      message: "Error reading Google Doc, word count is 0",
+    });
+  }
 });
 
 // Add a new salary
@@ -1756,7 +2171,10 @@ var taskCW = cron.schedule(
       function (error, results, fields) {
         axios
           .get(
-            "https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            `https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=${
+              process.env.GOOGLE_SHEETS_API_KEY ||
+              "AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            }`
           )
           .then((res) => {
             const data = res.data.valueRanges[0].values;
@@ -1901,7 +2319,10 @@ var taskVE = cron.schedule(
       function (error, results, fields) {
         axios
           .get(
-            "https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            `https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=${
+              process.env.GOOGLE_SHEETS_API_KEY ||
+              "AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            }`
           )
           .then((res) => {
             const data = res.data.valueRanges[0].values;
@@ -2046,7 +2467,10 @@ var taskAC = cron.schedule(
       function (error, results, fields) {
         axios
           .get(
-            "https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            `https://sheets.googleapis.com/v4/spreadsheets/1Z_ucuIK9wVHmMiCTThKBLH_3uN2REFW6k31Ov8hgnk0/values:batchGet?ranges=Sheet2&majorDimension=ROWS&key=${
+              process.env.GOOGLE_SHEETS_API_KEY ||
+              "AIzaSyByXzekuWCb4pI-ZTD7yEAGVYV0224Mc6Q"
+            }`
           )
           .then((res) => {
             const data = res.data.valueRanges[0].values;
